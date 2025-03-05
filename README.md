@@ -36,7 +36,7 @@ A Python tool that automatically generates Word documents containing Oracle data
 
 2. Open your web browser and navigate to:
    ```
-   http://localhost:5000
+   http://localhost:8000
    ```
 
 3. Enter your database connection details:
