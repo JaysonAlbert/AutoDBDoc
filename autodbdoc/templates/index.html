@@ -701,18 +701,43 @@
             
             // Table search
             tableSearch.addEventListener('input', () => {
-                const searchTerm = tableSearch.value.toLowerCase();
+                const searchTerm = tableSearch.value.trim(); // 获取输入并去除首尾空格
                 const tableItems = document.querySelectorAll('.table-item');
-                
-                tableItems.forEach(item => {
-                    const tableName = item.querySelector('label').textContent.trim().toLowerCase();
-                    if (tableName.includes(searchTerm)) {
+
+                // 如果输入为空，显示所有项
+                if (!searchTerm) {
+                    tableItems.forEach(item => {
                         item.style.display = 'block';
-                    } else {
-                        item.style.display = 'none';
-                    }
-                });
-            });
+                    });
+                    return;
+                }
+
+                let regex;
+                try {
+                    // 尝试创建正则表达式，忽略大小写
+                    regex = new RegExp(searchTerm, 'i');
+                    // 使用正则表达式搜索
+                    tableItems.forEach(item => {
+                        const tableName = item.querySelector('label').textContent.trim();
+                        if (regex.test(tableName)) {
+                            item.style.display = 'block';
+                        } else {
+                            item.style.display = 'none';
+                        }
+                    });
+                } catch (e) {
+                    // 正则表达式无效时，回退到普通文本搜索
+                    const searchLower = searchTerm.toLowerCase();
+                    tableItems.forEach(item => {
+                        const tableName = item.querySelector('label').textContent.trim().toLowerCase();
+                        if (tableName.includes(searchLower)) {
+                            item.style.display = 'block';
+                        } else {
+                            item.style.display = 'none';
+                        }
+                    });
+                }
+             });
             
             // Back button
             backToConnectionBtn.addEventListener('click', () => {
