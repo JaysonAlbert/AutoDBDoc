@@ -4,6 +4,7 @@ from autodbdoc.db_reader import OracleDBReader
 from autodbdoc.doc_generator import DocGenerator
 import sys
 import shutil
+import argparse
 
 def get_terminal_width():
     """Get the width of the terminal."""
@@ -38,7 +39,37 @@ def progress_callback(message, progress, total):
     if progress >= total:
         print()
 
+def list_tables(db_reader):
+    """List all available tables."""
+    tables = db_reader.get_tables()
+    print("\nAvailable tables:")
+    for i, table in enumerate(tables, 1):
+        print(f"{i}. {table}")
+    return tables
+
+def select_tables(tables):
+    """Let user select tables to document."""
+    print("\nEnter table numbers to document (comma-separated) or 'all' for all tables:")
+    selection = input().strip().lower()
+    
+    if selection == 'all':
+        return None
+    
+    try:
+        indices = [int(x.strip()) - 1 for x in selection.split(',')]
+        selected_tables = [tables[i] for i in indices]
+        return selected_tables
+    except (ValueError, IndexError):
+        print("Invalid selection. Please enter valid table numbers or 'all'.")
+        return select_tables(tables)
+
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Generate database documentation')
+    parser.add_argument('--list', action='store_true', help='List available tables and exit')
+    parser.add_argument('--tables', nargs='+', help='Specific tables to document')
+    args = parser.parse_args()
+    
     # Load environment variables
     load_dotenv()
     
@@ -65,7 +96,19 @@ def main():
     try:
         # Get list of tables
         tables = db_reader.get_tables()
-        print(f"Found {len(tables)} tables in the database")
+        
+        # Handle --list option
+        if args.list:
+            list_tables(db_reader)
+            return
+        
+        # Handle --tables option
+        selected_tables = args.tables if args.tables else None
+        
+        # If no tables specified, let user select
+        if not selected_tables:
+            tables = list_tables(db_reader)
+            selected_tables = select_tables(tables)
         
         # Initialize document generator with progress callback
         doc_generator = DocGenerator(db_reader, progress_callback=progress_callback)
@@ -75,7 +118,7 @@ def main():
         output_dir = "generated_docs"
         os.makedirs(output_dir, exist_ok=True)
         
-        filename = doc_generator.generate_documentation(service_name, output_dir)
+        filename = doc_generator.generate_documentation(service_name, output_dir, selected_tables)
         print(f"\nDocumentation has been generated successfully: {filename}")
         
     except Exception as e:

@@ -16,37 +16,46 @@ class DocGenerator:
         self.doc = Document()
         self.progress_callback = progress_callback
         
-    def generate_documentation(self, service_name, output_dir):
-        """Generate documentation for the database."""
+    def generate_documentation(self, service_name, output_dir, selected_tables=None):
+        """Generate documentation for the database.
+        
+        Args:
+            service_name (str): Name of the database service
+            output_dir (str): Directory to save the generated documentation
+            selected_tables (list, optional): List of table names to document. If None, all tables will be documented.
+        """
         try:
-
-
             if self.progress_callback:
                 self.progress_callback('Starting documentation generation', 0, 100)
 
-            # Get all tables
-            tables = self.db_reader.get_tables()
+            # Get all tables or use selected tables
+            if selected_tables is None:
+                tables = self.db_reader.get_tables()
+            else:
+                # Validate that all selected tables exist
+                all_tables = set(self.db_reader.get_tables())
+                invalid_tables = set(selected_tables) - all_tables
+                if invalid_tables:
+                    raise ValueError(f"Invalid table names: {', '.join(invalid_tables)}")
+                tables = selected_tables
+            
             total_tables = len(tables)
             
             # Create title page
             self._create_title_page(service_name)
             if self.progress_callback:
-                self.progress_callback('Created title page', 10, 100)
-            
+                self.progress_callback('Created title page', 0, 100)
 
+            # Create table index
+            self._create_table_index(tables)
             if self.progress_callback:
-                self.progress_callback(f'Found {total_tables} tables', 0, 100)
-            
-            # Create table of contents
-            self._create_table_of_contents(tables)
-            if self.progress_callback:
-                self.progress_callback('Created table of contents', 0, 100)
+                self.progress_callback('Created table index', 0, 100)
+
             
             # Generate documentation for each table
             for i, table in enumerate(tables, 1):
                 if self.progress_callback:
-                    progress =  (i / total_tables * 60)  # 3-97% for table processing
-                    self.progress_callback(f'Processing table {i}/{total_tables}', progress, 100)
+                    self.progress_callback(f'Processing table {i}/{total_tables}: {table}', i, total_tables)
                 self._document_table(table)
             
             # Save the document
@@ -55,7 +64,7 @@ class DocGenerator:
             filepath = os.path.join(output_dir, filename)
             
             if self.progress_callback:
-                self.progress_callback('Saving document...', 90, 100)
+                self.progress_callback('Saving document...', 100, 100)
             
             self.doc.save(filepath)
             
@@ -88,31 +97,46 @@ class DocGenerator:
         date_run = date.add_run(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         date_run.font.size = Pt(12)
         
-        # Add page break
-        self.doc.add_page_break()
     
-    def _create_table_of_contents(self, tables):
-        """Create the table of contents."""
+    def _create_table_index(self, tables):
+        """Create a table index page with links to each table section."""
         # Add heading
-        self.doc.add_heading('Table of Contents', 1)
+        self.doc.add_heading('Table Index', 1)
         
-        # Add table of contents
-        paragraph = self.doc.add_paragraph()
-        run = paragraph.add_run()
+        # Add description
+        description = self.doc.add_paragraph()
+        description.add_run('This section provides a quick reference to all tables in the database with their descriptions.')
         
-        # Create TOC field
-        fldChar1 = OxmlElement('w:fldChar')
-        fldChar1.set(qn('w:fldCharType'), 'begin')
+        # Create table with 2 columns: Table Name and Description
+        table = self.doc.add_table(rows=1, cols=2)
+        table.style = 'Table Grid'
         
-        instrText = OxmlElement('w:instrText')
-        instrText.text = "TOC \\o \"1-3\" \\h \\z \\u"
+        # Add header row
+        header_cells = table.rows[0].cells
+        headers = ['Table Name', 'Description']
         
-        fldChar2 = OxmlElement('w:fldChar')
-        fldChar2.set(qn('w:fldCharType'), 'end')
+        for i, header in enumerate(headers):
+            cell = header_cells[i]
+            cell.text = header
+            cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            cell.paragraphs[0].runs[0].font.bold = True
         
-        run._r.append(fldChar1)
-        run._r.append(instrText)
-        run._r.append(fldChar2)
+        # Add table rows
+        for table_name in tables:
+            # Get table description
+            description = self.db_reader.get_table_description(table_name)
+            
+            # Add row
+            row_cells = table.add_row().cells
+            
+            # Add table name with hyperlink
+            paragraph = row_cells[0].paragraphs[0]
+            run = paragraph.add_run(table_name)
+            run.font.color.rgb = RGBColor(0, 0, 255)  # Blue color for links
+            run.font.underline = True
+            
+            # Add description
+            row_cells[1].text = description if description else 'No description available'
         
         # Add page break
         self.doc.add_page_break()

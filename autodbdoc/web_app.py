@@ -14,6 +14,7 @@ import json
 import time
 from apscheduler.schedulers.background import BackgroundScheduler
 from .logger_config import logger
+import threading
 
 def setup_logging():
     """Configure logging for the application."""
@@ -371,173 +372,133 @@ def parse_tns_config(tns_config):
         logger.error(f"Error parsing TNS configuration: {str(e)}")
         raise
 
-def generate_documentation(job_id, connection_params):
-    """Background task to generate documentation."""
+def generate_documentation(job_id, connection_params, selected_tables=None):
+    """Generate documentation for the database in a background thread."""
     try:
-        # Initialize progress for this job
-        create_job(job_id, {}, connection_params)
-        start_time = time.time()
-        
         # Initialize database reader
-        logger.debug("Initializing database reader...")
-        if connection_params.get('connection_type') == 'tns':
-            logger.info("Using TNS connection")
-            # For TNS connections, pass the TNS config directly
-            db_reader = OracleDBReader({
-                'username': connection_params['username'],
-                'password': connection_params['password'],
-                'tns_config': connection_params['tns_config']
-            })
-        else:
-            logger.info("Using basic connection")
-            db_reader = OracleDBReader(connection_params)
-            
-        logger.info("Database connection established")
-        update_job_status(job_id, 'running', 'Database connected successfully')
+        db_reader = OracleDBReader(connection_params)
         
-        # Get list of tables
-        update_job_status(job_id, 'running', 'Fetching table list...')
-        logger.debug("Fetching table list...")
-        tables = db_reader.get_tables()
-        total_tables = len(tables)
-        logger.info("Found %d tables", total_tables)
-        update_job_status(job_id, 'running', f'Found {total_tables} tables to process', total=total_tables)
+        # Update job status
+        update_job_status(
+            job_id=job_id,
+            status='running',
+            message='Connected to database',
+            current=5,
+            total=100
+        )
         
-        # Define progress callback with time estimation
+        # Create output directory if it doesn't exist
+        output_dir = app.config['UPLOAD_FOLDER']
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Define progress callback
         def progress_callback(message, current, total):
-            elapsed_time = time.time() - start_time
-            if current > 0:
-                # Calculate estimated total time based on progress
-                estimated_total_time = (elapsed_time / current) * total
-                remaining_time = estimated_total_time - elapsed_time
-                
-                # Format remaining time
-                if remaining_time > 60:
-                    remaining_str = f"{int(remaining_time/60)}m {int(remaining_time%60)}s"
-                else:
-                    remaining_str = f"{int(remaining_time)}s"
-                
-                message = f"{message} (Estimated time remaining: {remaining_str})"
-            
-            update_job_status(job_id, 'running', message, current=current, total=total)
+            update_job_status(
+                job_id=job_id,
+                status='running',
+                message=message,
+                current=current,
+                total=total
+            )
         
-        # Initialize document generator with progress callback
-        logger.debug("Initializing document generator...")
+        # Initialize document generator
         doc_generator = DocGenerator(db_reader, progress_callback=progress_callback)
-        update_job_status(job_id, 'running', 'Document generator initialized')
-        
-        # Get service name for title page
-        if connection_params.get('connection_type') == 'tns':
-            # Extract service name from TNS config
-            tns_lines = connection_params['tns_config'].strip().split('\n')
-            service_name = None
-            for line in tns_lines:
-                if 'SERVICE_NAME' in line:
-                    service_name = line.split('=')[1].strip().strip('()')
-                    break
-            if not service_name:
-                service_name = "Oracle Database"
-        else:
-            service_name = connection_params['service_name']
         
         # Generate documentation
-        logger.info(f"Starting documentation generation for {service_name}")
-        filename = doc_generator.generate_documentation(service_name, app.config['UPLOAD_FOLDER'])
-        update_job_status(job_id, 'running', 'Documentation generated successfully', filename=filename)
+        service_name = connection_params.get('service_name', 'Oracle Database')
         
-        # Close database connection
-        db_reader.close()
-        update_job_status(job_id, 'running', 'Database connection closed')
+        # Generate the documentation with selected tables
+        filename = doc_generator.generate_documentation(service_name, output_dir, selected_tables)
         
-        # Update final status
-        total_time = time.time() - start_time
-        if total_time > 60:
-            total_time_str = f"{int(total_time/60)}m {int(total_time%60)}s"
-        else:
-            total_time_str = f"{int(total_time)}s"
-            
-        update_job_status(job_id, 'completed', f'Documentation generated successfully! (Total time: {total_time_str})', filename=filename)
+        # Update job status
+        update_job_status(
+            job_id=job_id,
+            status='completed',
+            message='Documentation generated successfully',
+            current=100,
+            total=100,
+            filename=filename
+        )
         
-        logger.info("Documentation generation completed successfully")
+        # Clean up old files
+        cleanup_old_files()
         
     except Exception as e:
-        logger.error("Error in background task: %s", str(e), exc_info=True)
-        update_job_status(job_id, 'error', f'Error: {str(e)}')
+        logger.error(f"Error generating documentation: {str(e)}")
+        update_job_status(
+            job_id=job_id,
+            status='error',
+            message=f"Error: {str(e)}",
+            current=0,
+            total=100
+        )
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
+    """Render the home page and handle form submission."""
     form = DatabaseForm()
-    logger.debug("Request received: %s", request.method)
+    
     if request.method == 'POST':
-        logger.debug("Form data received: %s", request.form)
-        logger.debug("Request headers: %s", dict(request.headers))
-        logger.debug("Content type: %s", request.content_type)
-        logger.debug("Raw data: %s", request.get_data())
-        
-        try:
-            # Handle form submission
-            if form.validate_on_submit():
-                logger.info("Form validated successfully")
-                logger.info("Starting documentation generation process")
+        # Check if it's a form submission
+        if form.validate_on_submit():
+            try:
+                request_info = get_request_info(request)
                 
-                # Parse connection details based on connection type
+                # Parse connection parameters based on connection type
                 connection_params = {}
                 if form.connection_type.data == 'basic':
                     connection_params = {
-                        'connection_type': 'basic',
                         'username': form.username.data,
                         'password': form.password.data,
                         'host': form.host.data,
                         'port': form.port.data,
                         'service_name': form.service_name.data
                     }
-                    logger.info("Using basic connection to %s:%s/%s", form.host.data, form.port.data, form.service_name.data)
                 elif form.connection_type.data == 'tns':
                     connection_params = parse_tns_config(form.tns_config.data)
-                    connection_params['connection_type'] = 'tns'
                     connection_params['username'] = form.username.data
                     connection_params['password'] = form.password.data
-                    logger.info("Using TNS connection parsed to basic parameters %s", connection_params)
                 elif form.connection_type.data == 'connection_string':
                     connection_params = parse_connection_string(form.connection_string.data)
-                    connection_params['connection_type'] = 'connection_string'
-                    logger.info("Using connection string parsed to basic parameters %s", connection_params)
                 
-                # Generate unique job ID
+                # Validate connection parameters
+                if not connection_params:
+                    flash('Invalid connection parameters', 'danger')
+                    return render_template('index.html', form=form)
+                
+                # Create a new job
                 job_id = str(uuid.uuid4())
-                
-                # Get request information
-                request_info = get_request_info(request)
-                
-                # Create job with request info
                 create_job(job_id, request_info, connection_params)
                 
-                # Add job to scheduler
-                scheduler.add_job(
-                    id=job_id,
-                    func=generate_documentation,
-                    args=[job_id, connection_params],
-                    trigger='date',
-                    replace_existing=True
-                )
-                
+                # Return success with job ID for table selection step
                 return jsonify({
                     'status': 'success',
-                    'message': 'Documentation generation started',
-                    'job_id': job_id
+                    'message': 'Connection established',
+                    'job_id': job_id,
+                    'connection_params': connection_params
                 })
-            else:
-                logger.warning("Form validation failed: %s", form.errors)
+                
+            except Exception as e:
+                logger.error(f"Error processing form: {str(e)}")
                 return jsonify({
                     'status': 'error',
-                    'message': 'Validation failed',
-                    'errors': form.errors
-                }), 400
-        except Exception as e:
-            logger.error("Error occurred: %s", str(e))
-            logger.error("Error during documentation generation: %s", str(e), exc_info=True)
-            return jsonify({'status': 'error', 'message': str(e)}), 500
+                    'message': f"Error: {str(e)}"
+                })
+        else:
+            # Return validation errors as JSON
+            return jsonify({
+                'status': 'error',
+                'message': 'Form validation failed',
+                'errors': form.errors
+            })
+        
+        # If we got here, something went wrong
+        return jsonify({
+            'status': 'error',
+            'message': 'An unexpected error occurred'
+        })
     
+    # GET request - render the form
     return render_template('index.html', form=form)
 
 @app.route('/progress/<job_id>')
@@ -561,6 +522,93 @@ def download_file(filename):
     except Exception as e:
         logger.error(f"Error downloading file: {str(e)}", exc_info=True)
         return jsonify({'status': 'error', 'message': str(e)}), 404
+
+@app.route('/tables', methods=['POST'])
+def get_tables():
+    """Get the list of tables for the given connection parameters."""
+    connection_params = request.json.get('connection_params')
+    
+    if not connection_params:
+        return jsonify({'status': 'error', 'message': 'Missing connection parameters'})
+    
+    try:
+        # Initialize database reader
+        db_reader = OracleDBReader(connection_params)
+        
+        # Get list of tables
+        tables = db_reader.get_tables()
+        
+        # Close the connection
+        db_reader.close()
+        
+        return jsonify({
+            'status': 'success',
+            'tables': tables
+        })
+    except Exception as e:
+        logger.error(f"Error getting tables: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f"Failed to get tables: {str(e)}"
+        })
+
+@app.route('/generate', methods=['POST'])
+def start_generation():
+    """Start the documentation generation process with selected tables."""
+    data = request.json
+    job_id = data.get('job_id')
+    connection_params = data.get('connection_params')
+    selected_tables = data.get('selected_tables')
+    
+    if not job_id or not connection_params:
+        return jsonify({
+            'status': 'error',
+            'message': 'Missing job_id or connection_params'
+        })
+    
+    try:
+        # Get job details
+        conn = get_db()
+        job = conn.execute(
+            'SELECT * FROM jobs WHERE job_id = ?', (job_id,)
+        ).fetchone()
+        conn.close()
+        
+        if not job:
+            return jsonify({
+                'status': 'error',
+                'message': 'Invalid job ID'
+            })
+        
+        # Update job status
+        update_job_status(
+            job_id=job_id,
+            status='starting',
+            message='Starting documentation generation...',
+            current=0,
+            total=100
+        )
+        
+        # Start generation in a background thread
+        thread = threading.Thread(
+            target=generate_documentation,
+            args=(job_id, connection_params, selected_tables)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Documentation generation started',
+            'job_id': job_id
+        })
+        
+    except Exception as e:
+        logger.error(f"Error starting generation: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f"Error: {str(e)}"
+        })
 
 if __name__ == '__main__':
     logger.info("Starting Flask application")
